@@ -1,0 +1,189 @@
+---
+title: "Visualização de Crimes por AISP no Rio de Janeiro"
+resource_files:
+- www/shape_limites_seg_simple/lm_dp_2019_simple.shx
+- www/shape_limites_seg_simple/lm_dp_2019_simple.prj
+runtime: shiny
+
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    source_code: embed
+    
+---
+
+```{r global, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(leaflet)
+#library(shiny)
+library(sf)
+library(plotly)
+library(RColorBrewer)
+
+df_aisp <- read_csv2("www/AispPorRegiao.csv")
+df_cisp_aisp <- read_csv2("www/CorrespondenciaCispAisp.csv") %>%
+  mutate_all(as.integer)
+df_crimes <- read_rds("www/crimes.rds") %>%
+  left_join(df_cisp_aisp, by=c("CISP"="circ", "ano"="vano", "mes"="mes"))
+
+df_aisp_cisp_lookup <- df_aisp %>%
+  left_join(df_cisp_aisp, by=c("aisp","mes", "vano")) %>%
+  filter(regiao_nome=="Capital") %>% 
+  filter(vano==2020) %>%
+  select(aisp, circ) %>%
+  rename(cisp=circ)
+
+vec_aisp_capital <- df_aisp %>%
+  filter(regiao_nome=="Capital") %>% 
+  filter(vano==2020) %>%
+  pull(as.integer(aisp)) %>%
+  unique()
+
+#sf_deleg <- st_read("www/shape_limites_seg/lm_dp_2019.shp")
+#sf_deleg_simple <- sf_deleg %>% rmapshaper::ms_simplify()
+#sf_deleg_simple %>% #st_write("www/shape_limites_seg_simple/lm_dp_2019_simple.shp")
+sf_deleg <- st_read("www/shape_limites_seg_simple/lm_dp_2019_simple.shp")
+
+sf_deleg_capital <- sf_deleg %>% 
+  filter(aisp %in% vec_aisp_capital)
+
+df_crimes_capital <- df_crimes %>% 
+  filter(aisp %in% vec_aisp_capital) %>%
+  group_by(aisp,grupo,ano) %>%
+  #group_by(aisp, ano) %>%
+  summarise(contagem=sum(contagem, na.rm=T)) %>%
+  ungroup()
+
+grupo_crimes <- df_crimes_capital %>% pull(grupo) %>% unique() %>%fct_inorder()
+
+
+pal <- brewer.pal(5,"Set2")
+
+names(pal) <- grupo_crimes
+
+
+sf_plot <- df_crimes_capital %>% 
+  left_join(sf_deleg_capital, by="aisp") %>% 
+  st_as_sf() # %>%
+  # rmapshaper::ms_simplify()
+  # st_simplify(dTolerance=.00025,preserveTopology=T)
+```
+
+## Column {.sidebar}
+
+```{r}
+sliderInput("ano", "Ano", min=2007, max=2020, value=c(2007,2020),  sep="")
+checkboxGroupInput("grupo", "Grupo", choices=grupo_crimes, selected = grupo_crimes)
+```
+
+## Row {data-height=600}
+
+### 
+
+```{r}
+renderLeaflet({
+  
+  sf_plot_filtered <- sf_plot %>%
+    filter(between(ano, as.integer(input$ano[1]), as.integer(input$ano[2]))) %>%
+    filter(grupo %in% input$grupo) %>%
+    group_by(aisp) %>%
+    summarise(contagem=sum(contagem)) %>%
+    ungroup() %>%
+    st_as_sf()
+
+  
+ pop <- str_glue("<b>AISP:</b> {sf_plot_filtered$aisp} <br/>
+                <b>Ocorrências:</b> {sf_plot_filtered$contagem} <br/>")
+  
+ fill <- colorQuantile("YlOrRd", sf_plot_filtered$contagem, n=7)
+  
+  base_map <- sf_plot_filtered %>%
+    leaflet() %>%
+    addTiles()  %>% 
+    setView(lat=-22.93, lng=-43.45 , zoom=10.5) %>%
+    addProviderTiles("Esri.WorldImagery") %>%
+    addPolygons(color = "lightblue", weight = 1, smoothFactor = 0.5,
+                opacity = 1.0, fillOpacity = 0.6,
+                fillColor= ~fill(contagem),
+                popup = pop,
+                highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                    bringToFront = TRUE))
+  
+
+  base_map
+})
+```
+
+
+## Row {data-height=350}
+
+###
+
+```{r}
+renderPlotly({
+  
+  p <- df_crimes_capital %>%
+    mutate(grupo=fct_inorder(grupo)) %>%
+    filter(between(ano, as.integer(input$ano[1]), as.integer(input$ano[2]))) %>%
+   # filter(grupo %in% input$grupo) %>%
+    group_by(ano, grupo) %>%
+    summarise(contagem=sum(contagem)) %>%
+    ungroup() %>%
+    ggplot(aes(x=ano, y=contagem, color=grupo)) +
+    geom_line() +
+    theme_minimal() +
+    scale_color_manual(values=pal)
+   # guides(fill = guide_legend(reverse=T)) +
+    labs(title="Ocorrências por Grupo Por Ano")
+  
+  
+  
+  p %>% ggplotly()
+  
+})
+```
+
+
+###
+
+```{r}
+
+renderPlotly({
+  top_aisps <- df_crimes_capital %>%
+    mutate(grupo=fct_inorder(grupo)) %>%
+    filter(between(ano, as.integer(input$ano[1]), as.integer(input$ano[2]))) %>%
+    filter(grupo %in% input$grupo) %>%
+    group_by(aisp) %>%
+    summarise(contagem_total=sum(contagem)) %>%
+    slice_max(contagem_total, n=4) %>%
+    ungroup() %>%
+    pull(aisp)
+  
+  p <- df_crimes_capital %>%
+    mutate(grupo=fct_inorder(grupo)) %>%
+    filter(between(ano, as.integer(input$ano[1]), as.integer(input$ano[2])))  %>%
+    filter(grupo %in% input$grupo) %>%
+    group_by(aisp, grupo) %>%
+    summarise(contagem=sum(contagem)) %>%
+    ungroup() %>%
+    filter(aisp %in% top_aisps) %>%
+    mutate(aisp=as.character(aisp)%>%fct_infreq()) %>%
+    ggplot(aes(x=aisp, y=contagem, fill=grupo)) +
+    geom_col(position="dodge") +
+    scale_fill_manual(values=pal) +
+    theme_minimal() +
+    theme(legend.position='none') +
+    coord_flip()  +
+    labs(title="Top 4 AISP's por número de ocorrências", x="AISP")
+  
+  
+  p %>% ggplotly()
+  
+  
+})
+
+
+```
+
