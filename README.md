@@ -1,3 +1,3 @@
 # dashboard-example
-dashboard example with criminal data from RJ
-a shiny dashboard created as a demonstration for a Data Science course
+
+a shiny dashboard created as a demonstration for a Data Science course using criminal data from RJ
